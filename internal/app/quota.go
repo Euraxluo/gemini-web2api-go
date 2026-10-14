@@ -279,7 +279,9 @@ func expectedUpstreamPrefix(mc ModelConfig) string {
 // 自报了别家的模型（最常见就是回落 3.5 Flash-Lite）。只对登录态模型生效——
 // 基础模型的响应本来就不受配额门控。
 func downgraded(mc ModelConfig, res *StreamResult) bool {
-	if !modelNeedsLogin(mc) || res == nil || res.UpstreamModel == "" {
+	// 媒体模型（生图/音乐/视频）走工具通道：响应帧里的文本主干模型名跟请求的
+	// hex 无关，且媒体有自己的配额池（每号每天 10 张），不参与文本降级判定。
+	if mc.Tool > 0 || !modelNeedsLogin(mc) || res == nil || res.UpstreamModel == "" {
 		return false
 	}
 	prefix := expectedUpstreamPrefix(mc)
@@ -303,8 +305,8 @@ func markQuotaBlocked(id int64) {
 // quotaSkipSet 返回受限账号集合（供挑号绕开），顺带清掉过期标记。
 // 只对需要登录态的请求返回非空——基础模型不挑号。
 func quotaSkipSet(mc ModelConfig) (map[int64]bool, int) {
-	if !modelNeedsLogin(mc) {
-		return nil, 0
+	if mc.Tool > 0 || !modelNeedsLogin(mc) {
+		return nil, 0 // 媒体模型有自己的配额池，不吃文本高级档的受限标记
 	}
 	quotaMu.Lock()
 	defer quotaMu.Unlock()
