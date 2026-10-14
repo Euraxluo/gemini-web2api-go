@@ -170,6 +170,11 @@ func fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime 
 		}
 	}
 	if len(urls) == 0 {
+		// 响应里有内容帧但没有图片链接，最常见的两种原因要分开报：
+		// 媒体配额耗尽（上游明确说「额度不足无法生成图片」）vs 真的结构变化。
+		if strings.Contains(raw, "额度不足无法生成图片") || strings.Contains(raw, "已达到上限") {
+			return nil, fmt.Errorf("上游媒体配额已耗尽（每号每天约 10 张）：本次生成被拒绝，等该号窗口重置后重试，或换别的账号")
+		}
 		return nil, fmt.Errorf("响应里没有图片 CDN 链接")
 	}
 	var arts []MediaArtifact
