@@ -59,6 +59,11 @@ type RuntimeConfig struct {
 	// 取代 auto_delete_conversation（省掉删除 RPC）。只登录态有意义，与 multi_turn 冲突
 	// （multi_turn 开着时不发）。默认 false，见 temporaryChatEligible。
 	TemporaryChat bool `json:"temporary_chat"`
+	// 提示词后缀：非空时追加到每次请求 prompt 的最末尾（末尾指令权重最大，与本文件
+	// 工具围栏的实测结论一致）。用途：把网页端调教出来的「聊天伙伴」自我认知扳回任务
+	// 执行引擎——Gemini 网页系模型在 agent 场景会冒出「我只是聊天助手/无法操作」之类
+	// 的推诿。留空 = 不追加，保持纯透传。
+	SystemPromptSuffix string `json:"system_prompt_suffix"`
 	// 账号优先调度：绑定的出口到了限流线时**换账号不换出口**。开着时每个号永远只从
 	// 自己绑定的那个 IP 出去（Google 眼里不存在「一个号多个 IP」的账号共享特征），
 	// 线是本地的并发/RPM/RPH 三档——它们本身留足了离 Google 真正封禁的余量，在线上
@@ -151,6 +156,9 @@ func validateRuntimeConfig(c RuntimeConfig) error {
 		if r.v < r.min || r.v > r.max {
 			return fmt.Errorf("%s=%d 超出允许范围 [%d, %d]", r.name, r.v, r.min, r.max)
 		}
+	}
+	if len(c.SystemPromptSuffix) > 20000 {
+		return fmt.Errorf("system_prompt_suffix 过长: %d 字节（上限 20000）", len(c.SystemPromptSuffix))
 	}
 	if _, _, err := resolveModel(c.DefaultModel); err != nil {
 		return fmt.Errorf("default_model 不可用: %v", err)

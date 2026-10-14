@@ -949,6 +949,8 @@ const RT_GROUPS = [
         hint: '走网页端原生「临时对话」（inner[45]=1）：会话压根不进账号的会话列表、不用于训练，比「自动删网页会话」更干净，还省掉那次删除请求。只登录态有意义；开了「服务端多轮续接」时不生效（临时对话不留列表，多轮要靠服务端留会话）' },
       { k: 'multi_turn', label: '服务端多轮续接', type: 'bool',
         hint: '走 Gemini 原生服务端多轮：按历史前缀认出这是上一轮的续接，命中就只发最新一句、历史留在服务端，同一串对话复用同一个 gemini 会话（不再每发一条就新开一个）。匿名/登录都行，带图或带工具时不生效。首轮/重启/改历史会退回整段重发。默认关' },
+      { k: 'system_prompt_suffix', label: '提示词后缀（扳自我认知）', type: 'textarea', wide: true,
+        hint: '非空时追加到每次请求 prompt 的最末尾（末尾指令权重最大）。专门治 Gemini 网页系模型在 agent 场景冒出的「我只是聊天助手/无法操作」推诿——客户端 system 提示压不住网页端调教出来的口吻，这条压得住。留空 = 纯透传' },
       { k: 'anon_first', label: '匿名优先', type: 'bool',
         hint: '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 3.1 Pro / 3.8 Flash / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）' },
     ],
@@ -997,6 +999,8 @@ async function loadRtCfg() {
             ).join('') + '</select>';
           } else if (f.type === 'int') {
             input = `<input type="number" id="rt_${f.k}" value="${v}" min="${f.min}" max="${f.max}">`;
+          } else if (f.type === 'textarea') {
+            input = `<textarea id="rt_${f.k}" rows="4" class="wide">${escapeHtml(String(v ?? ''))}</textarea>`;
           } else {
             input = `<input type="text" id="rt_${f.k}" value="${escapeHtml(String(v ?? ''))}">`;
           }
