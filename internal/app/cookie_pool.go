@@ -552,7 +552,8 @@ func checkAccountCookie(a CookieAccount) CookieCheck {
 
 	// 先作废缓存，否则可能拿到几分钟前的旧结论，检测就没意义了
 	invalidateXSRF(a.Cookie)
-	_, err = getXSRF(a.Cookie, proxyURL)
+	var xsrfTok string
+	xsrfTok, err = getXSRF(a.Cookie, proxyURL)
 	took := time.Since(t0).Milliseconds()
 	if err != nil {
 		// 只有「能打开页面但没有登录态 / 被重定向到登录页」才定罪 cookie —— 跟
@@ -573,6 +574,11 @@ func checkAccountCookie(a CookieAccount) CookieCheck {
 	detail := "登录态有效"
 	if extractSAPISID(a.Cookie) == "" {
 		detail += "，但缺 SAPISID（算不出授权头，部分接口会被当匿名）"
+	}
+	// 顺手拉配额窗口（jSf9Qc，/usage 页的数据源）：高级档剩多少、何时重置。
+	// 失败不影响检测结论——配额探测是增值信息，不是登录态判据。
+	if wins, qerr := fetchQuotaWindows(a.Cookie, xsrfTok, proxyURL); qerr == nil && len(wins) > 0 {
+		detail += "；配额 " + describeQuota(wins)
 	}
 	return CookieCheck{OK: true, Detail: detail, ProxyName: name, TookMs: took}
 }
