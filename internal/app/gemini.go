@@ -387,18 +387,18 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 	tried := map[int64]bool{}
 	// 每个号只给一次「轮转后重试」的机会，避免在一个请求里反复打 accounts.google.com
 	rotatedOnce := map[int64]bool{}
-	firstPick := true
 	sawAccount := false
-	expensive := 0 // 真发过 XSRF 网络请求的候选号数；满载换号是纯内存操作，不计入
+	quotaSkipped := 0 // 因高级配额受限被绕开的号数
+	expensive := 0    // 真发过 XSRF 网络请求的候选号数；满载换号是纯内存操作，不计入
 	for {
 		var acct *CookieAccount
 		if !anon {
-			if firstPick {
-				acct, _ = pickCookieAccount()
-			} else {
-				acct, _ = pickCookieAccountExcept(tried)
-			}
-			firstPick = false
+			// 配额感知路由：登录态模型的挑号绕开配额受限的号（Flash-Lite 等
+			// 基础模型不受影响）。受限号继续服务只会产出静默降级的回答。
+			skipSet, blockedN := quotaSkipSet(mc)
+			quotaSkipped = blockedN
+			skip := mergeSkip(tried, skipSet)
+			acct, _ = pickCookieAccountExcept(skip)
 			if acct == nil {
 				break
 			}
@@ -481,6 +481,14 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		lastCookieErr = err
 		logf("[cookie] 账号 #%d 不可用，换下一个：%v", acct.ID, err)
 		releaseHeld()
+	}
+
+	// 所有账号的高级配额都在受限期（配额感知路由）：明确报错而不是匿名服务——
+	// 匿名发登录态模型必然被静默降级，客户端拿到的是「看起来成功」的劣化回答。
+	if !slotHeld && sawAccount == false && quotaSkipped > 0 {
+		return attrib(fmt.Errorf(
+			"全部 %d 个账号的高级配额都在受限期（滚动窗口，最迟 %v 后自动恢复）；"+
+				"本次请求已取消，避免拿到静默降级的 Flash-Lite 回答", quotaSkipped, quotaBlockDur))
 	}
 
 	// 所有 enabled 账号绑定的出口都在限流线上（account_first）：要么按 fallback_direct
@@ -785,6 +793,21 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			TTFBMs:           ttfb,
 			TotalMs:          time.Since(t0).Milliseconds(),
 		}
+		// 配额感知路由：登录态模型的响应被自报成了别家模型 = 静默降级。
+		// 给该号打受限标记，还没吐过字就换号重试；已吐字（真流式）或没有可换的号
+		// 时按降级结果如实返回——upstream_model 字段让客户端看得见。
+		if downgraded(mc, result) {
+			markQuotaBlocked(cookieID)
+			if tracker.emitted == "" && rtracker.emitted == "" &&
+				enabledAccountCount() > quotaBlockedCount() {
+				logf("[quota] 账号 #%d 被静默降级（上游自报 %s），换号重试",
+					cookieID, result.UpstreamModel)
+				return streamGenerateWithFiles(prompt, latest, mc, pending, onDelta, onReasoning)
+			}
+			logf("[quota] 账号 #%d 被静默降级（上游自报 %s），无可换的号或已吐字，按降级结果返回",
+				cookieID, result.UpstreamModel)
+		}
+
 		// 媒体模型：生成的产物字节不在这条响应里，要用同一套 cookie / 出口再走一遍
 		// hNvQHb + 下载 host 取回。取不到就记 MediaErr，让上层报错而不是返回半成品。
 		if mc.Tool == toolImage || mc.Tool == toolMusic || mc.Tool == toolVideo {

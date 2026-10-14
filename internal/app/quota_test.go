@@ -38,3 +38,51 @@ func TestParseQuotaPayload(t *testing.T) {
 		t.Errorf("describeQuota 输出异常: %q", d)
 	}
 }
+
+// 降级判定矩阵：请求的登录态模型与自报名前缀不符 = 被静默降级；基础模型不判。
+func TestDowngraded(t *testing.T) {
+	cases := []struct {
+		mc     ModelConfig
+		report string
+		want   bool
+	}{
+		{Models["gemini-4-argon"], "4 Argon", false},
+		{Models["gemini-4-argon"], "4 Argon High", false},
+		{Models["gemini-4-argon"], "3.5 Flash-Lite", true},
+		{Models["gemini-4-argon"], "", false}, // 没自报的不判（响应被拒等场景）
+		{Models["gemini-3.1-pro"], "3.1 Pro 扩展", false},
+		{Models["gemini-3.1-pro"], "3.5 Flash-Lite", true},
+		{Models["gemini-3.8-flash"], "3.8 Flash", false},
+		{Models["gemini-3.8-flash"], "3.1 Pro", true},
+		{Models["gemini-3.6-flash"], "3.5 Flash-Lite", false}, // 基础模型不受配额门控
+	}
+	for _, c := range cases {
+		res := &StreamResult{UpstreamModel: c.report}
+		if got := downgraded(c.mc, res); got != c.want {
+			t.Errorf("downgraded(%s, %q) = %v, want %v", c.mc.HexID, c.report, got, c.want)
+		}
+		// nil res 不判
+		if downgraded(c.mc, nil) {
+			t.Errorf("nil res 不应判降级")
+		}
+	}
+}
+
+// 受限标记生命周期：打上 → 生效 → 45 分钟后自动过期。
+func TestQuotaBlockLifecycle(t *testing.T) {
+	id := int64(999999) // 不存在的账号，纯测标记
+	markQuotaBlocked(id)
+	if skip, _ := quotaSkipSet(Models["gemini-4-argon"]); !skip[id] {
+		t.Error("打标后应在 skip 集合里")
+	}
+	if skip2, _ := quotaSkipSet(Models["gemini-3.6-flash"]); skip2[id] {
+		t.Error("基础模型不应受配额门控")
+	}
+	if quotaBlockedCount() < 1 {
+		t.Error("计数应 ≥1")
+	}
+	quotaUnblock(id)
+	if skip3, _ := quotaSkipSet(Models["gemini-4-argon"]); skip3[id] {
+		t.Error("解除后不应再在 skip 集合里")
+	}
+}

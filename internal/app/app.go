@@ -123,6 +123,8 @@ func Run() {
 	// 配额探测（配额中枢/聚合器用）：一次返回全部 enabled 账号的配额窗口。
 	// 走 API key 鉴权而非 admin token——聚合器手里只有这一把钥匙。
 	mux.HandleFunc("/v1/quota", requireAPIKey(handleV1Quota))
+	// token 消耗统计（同上，聚合器用）：形状与 /admin/api/stats 一致。
+	mux.HandleFunc("/v1/usage", requireAPIKey(handleV1Usage))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			handleRoot(w, r)

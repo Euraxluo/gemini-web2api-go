@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -224,4 +225,136 @@ func handleV1Quota(w http.ResponseWriter, r *http.Request) {
 		out = append(out, entry)
 	}
 	writeJSON(w, 200, map[string]interface{}{"object": "list", "data": out})
+}
+
+// handleV1Usage — GET /v1/usage?hours=N：token 消耗统计（API key 鉴权），
+// 供配额中枢的「Token 消耗」卡聚合。形状与 /admin/api/stats 一致。
+func handleV1Usage(w http.ResponseWriter, r *http.Request) {
+	hours := 24
+	if v := r.URL.Query().Get("hours"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			hours = n
+		}
+	}
+	if hours > 8760 {
+		hours = 8760
+	}
+	writeJSON(w, 200, usageStats(hours))
+}
+
+// ---- 配额感知路由 ----
+//
+// Google 对无效/耗尽的配额不报错、只把生成静默降级成 Flash-Lite（客户端从状态码
+// 完全看不出来）。所以路由层要自己感知：生成完成后核对服务端自报的模型名，发现
+// 降级就给该账号打「高级配额受限」标记；之后需要登录态模型的挑号直接绕开它，
+// 还没往客户端吐过字的请求换号重试。标记 45 分钟自动过期——配额窗口是滚动的，
+// 过期后自然重试，若仍耗尽会再次打上（等效指数退避）。
+
+var (
+	quotaMu      sync.Mutex
+	quotaBlocked = map[int64]time.Time{} // accountID → 受限至时刻
+)
+
+const quotaBlockDur = 45 * time.Minute
+
+// expectedUpstreamPrefix 每个登录态模型应回报的显示名前缀（「4 Argon High」
+// 「3.1 Pro 扩展」这类后缀变体都用前缀匹配兜住）。
+func expectedUpstreamPrefix(mc ModelConfig) string {
+	switch mc.HexID {
+	case hexArgon4:
+		return "4 Argon"
+	case hexPro31:
+		return "3.1 Pro"
+	case hexFlash38:
+		return "3.8 Flash"
+	case hexFlash36:
+		return "3.6 Flash"
+	case hexFlashLite:
+		return "3.5 Flash-Lite"
+	}
+	return ""
+}
+
+// downgraded 判定一次成功响应是否被静默降级：请求的模型需要登录态，但服务端
+// 自报了别家的模型（最常见就是回落 3.5 Flash-Lite）。只对登录态模型生效——
+// 基础模型的响应本来就不受配额门控。
+func downgraded(mc ModelConfig, res *StreamResult) bool {
+	if !modelNeedsLogin(mc) || res == nil || res.UpstreamModel == "" {
+		return false
+	}
+	prefix := expectedUpstreamPrefix(mc)
+	return prefix != "" && !strings.HasPrefix(res.UpstreamModel, prefix)
+}
+
+// quotaUnblock 手动解除受限标记（探测发现配额恢复时用）。
+func quotaUnblock(id int64) {
+	quotaMu.Lock()
+	delete(quotaBlocked, id)
+	quotaMu.Unlock()
+}
+
+// markQuotaBlocked 给账号打高级配额受限标记。
+func markQuotaBlocked(id int64) {
+	quotaMu.Lock()
+	quotaBlocked[id] = time.Now().Add(quotaBlockDur)
+	quotaMu.Unlock()
+}
+
+// quotaSkipSet 返回受限账号集合（供挑号绕开），顺带清掉过期标记。
+// 只对需要登录态的请求返回非空——基础模型不挑号。
+func quotaSkipSet(mc ModelConfig) (map[int64]bool, int) {
+	if !modelNeedsLogin(mc) {
+		return nil, 0
+	}
+	quotaMu.Lock()
+	defer quotaMu.Unlock()
+	now := time.Now()
+	out := map[int64]bool{}
+	n := 0
+	for id, until := range quotaBlocked {
+		if until.After(now) {
+			out[id] = true
+			n++
+		} else {
+			delete(quotaBlocked, id)
+		}
+	}
+	return out, n
+}
+
+// quotaBlockedCount 当前受限（未过期）账号数。
+func quotaBlockedCount() int {
+	quotaMu.Lock()
+	defer quotaMu.Unlock()
+	now := time.Now()
+	n := 0
+	for id, until := range quotaBlocked {
+		if until.After(now) {
+			n++
+		} else {
+			delete(quotaBlocked, id)
+		}
+	}
+	return n
+}
+
+// mergeSkip 合并两个跳过集合；b 为空时直接复用 a，避免热路径上的分配。
+func mergeSkip(a, b map[int64]bool) map[int64]bool {
+	if len(b) == 0 {
+		return a
+	}
+	out := make(map[int64]bool, len(a)+len(b))
+	for k := range a {
+		out[k] = true
+	}
+	for k := range b {
+		out[k] = true
+	}
+	return out
+}
+
+// enabledAccountCount 当前 enabled 账号数。
+func enabledAccountCount() int {
+	_, n := accountCount()
+	return n
 }

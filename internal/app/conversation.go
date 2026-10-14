@@ -443,20 +443,27 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 		var lastCookieErr string
 		tried := map[int64]bool{}
 		emitted := false
+		servedDowngraded := false
 		wrapDelta := func(d string) {
 			emitted = true
 			if onDelta != nil {
 				onDelta(d)
 			}
 		}
+		skipSet, blockedN := quotaSkipSet(mc)
 		for attempt := 0; attempt < maxCookieTries; attempt++ {
 			var a *CookieAccount
-			if attempt == 0 {
-				a, _ = pickCookieAccount()
-			} else {
-				a, _ = pickCookieAccountExcept(tried)
-			}
+			skip := mergeSkip(tried, skipSet)
+			a, _ = pickCookieAccountExcept(skip)
 			if a == nil {
+				if attempt == 0 && blockedN > 0 {
+					// 全部账号的高级配额都在受限期：明确报错而不是匿名服务——
+					// 匿名发登录态模型必然被静默降级，agent 拿到的是「看起来成功」
+					// 的劣化回答。
+					return "", nil, nil, fmt.Errorf(
+						"全部 %d 个账号的高级配额都在受限期（滚动窗口，最迟 %v 后自动恢复）；"+
+							"本次请求已取消，避免拿到静默降级的 Flash-Lite 回答", blockedN, quotaBlockDur)
+				}
 				break
 			}
 			tried[a.ID] = true
@@ -472,6 +479,20 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 			logf("[conv] 新会话，账号 #%d，首轮发 %d 字节（tools=%d）", a.ID, len(prompt), len(tools))
 			res, convErr = streamGenerateConv(prompt, mc, conv, wrapDelta, onReasoning)
 			if convErr == nil {
+				// 配额感知路由：登录态模型被自报成别家模型 = 静默降级。还没吐过字
+				// 就换下一个号重建会话；已吐字只能如实返回（upstream_model 可见）。
+				if downgraded(mc, res) {
+					markQuotaBlocked(a.ID)
+					if emitted {
+						logf("[quota] 账号 #%d 被静默降级（上游自报 %s），已吐字，按降级结果返回",
+							a.ID, res.UpstreamModel)
+						servedDowngraded = true
+						break
+					}
+					logf("[quota] 账号 #%d 被静默降级（上游自报 %s），换下一个号建会话",
+						a.ID, res.UpstreamModel)
+					continue
+				}
 				break
 			}
 			msg := convErr.Error()
@@ -484,6 +505,12 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 			markCookieByStatus(a.ID, 401, msg)
 			lastCookieErr = msg
 			logf("[conv] 账号 #%d cookie 已死，换下一个建会话：%v", a.ID, msg)
+		}
+		if servedDowngraded {
+			// 所有候选号都被降级过：按最后一次的降级结果返回（upstream_model 可见）。
+			// 时机上是正确的降级兜底——明确失败 vs 劣化成功之间，这里选劣化成功，
+			// 因为多轮会话的上下文已经在服务端，客户端重试也改变不了配额现实。
+			logf("[quota] %d 个候选账号均被静默降级，按最后一次降级结果返回", len(tried))
 		}
 		if convErr != nil {
 			// 最后一个号死于 cookie 之外的错误：如实返回（res 可能为 nil）
