@@ -59,6 +59,14 @@ type RuntimeConfig struct {
 	// 取代 auto_delete_conversation（省掉删除 RPC）。只登录态有意义，与 multi_turn 冲突
 	// （multi_turn 开着时不发）。默认 false，见 temporaryChatEligible。
 	TemporaryChat bool `json:"temporary_chat"`
+	// 账号优先调度：绑定的出口到了限流线时**换账号不换出口**。开着时每个号永远只从
+	// 自己绑定的那个 IP 出去（Google 眼里不存在「一个号多个 IP」的账号共享特征），
+	// 线是本地的并发/RPM/RPH 三档——它们本身留足了离 Google 真正封禁的余量，在线上
+	// 换号就是「封禁线之前主动切」。全部账号的绑定出口都在线上时明确 429（或按
+	// fallback_direct 退直连）。默认 false = 旧行为：可用性优先，绑定的满了让这个号
+	// 漂到别的出口。没绑定过的号分新出口时优先挑没被别的 enabled 账号占的（一号一出口），
+	// 两种策略下都一样。见 acquireExitForAccount。
+	AccountFirst bool `json:"account_first"`
 }
 
 const runtimeConfigKey = "runtime_config"
@@ -94,6 +102,7 @@ func initRuntimeConfig() {
 		AutoDeleteConversation: cfg.AutoDeleteConversation,
 		AnonFirst:              cfg.AnonFirst,
 		TemporaryChat:          cfg.TemporaryChat,
+		AccountFirst:           cfg.AccountFirst,
 	}
 	if raw := kvGet(runtimeConfigKey); raw != "" {
 		saved := base
