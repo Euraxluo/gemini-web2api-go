@@ -305,11 +305,10 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	inner[61] = []interface{}{}
 	inner[68] = 1
 	inner[79] = mc.Mode
-	inner[80] = thinkingNormal
+	inner[80] = mc.thinkWire()
 	inner[91] = 0
 	inner[96] = 0
-	if mc.Thinking {
-		inner[80] = thinkingExtended
+	if mc.ThinkLevel > 0 {
 		inner[96] = 1
 	}
 
@@ -326,12 +325,8 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	}
 	body := buildBody(xsrf)
 
-	thinkVal := thinkingNormal
-	if mc.Thinking {
-		thinkVal = thinkingExtended
-	}
 	geminiHeaders := buildGeminiHeaders(conv.cookie, conv.sapisid, mc.HexID)
-	geminiHeaders["x-goog-ext-525001261-jspb"] = buildModelHeader(mc.HexID, mc.Mode, thinkVal, uuid.NewString())
+	geminiHeaders["x-goog-ext-525001261-jspb"] = buildModelHeader(mc.HexID, mc.Mode, mc.thinkWire(), uuid.NewString())
 	geminiHeaders["x-goog-ext-525005358-jspb"] = fmt.Sprintf(`["%s",1]`, reqUUID)
 
 	reqid := time.Now().UnixNano() % 1000000
